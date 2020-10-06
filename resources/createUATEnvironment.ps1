@@ -14,6 +14,6 @@ $env = "uat"
 $rg = $prefix + "rg" + $env
 # create resource group for uat environment services
 New-AzResourceGroup -Name $rg -Location $loc
-# create services for uat environment
+# create services for uat environment 
 New-AzResourceGroupDeployment -ResourceGroupName $rg -TemplateFile ".\azuredeploy.json" -prefix $prefix -env $env
 
