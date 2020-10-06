@@ -1,0 +1,102 @@
+# Basic YAML pipeline for Azure Data Factory by Alex Volok
+
+
+# Batching trigger set run only on a adf_publish branch
+# cicd folder is not watched
+trigger:
+  batch: true
+  branches:
+    include:
+      - adf_publish 
+    exclude:
+      - master
+  paths:
+    exclude:
+      - cicd/* 
+    include:
+      - "*"
+
+
+# Adjust variables, set a dummy product name, environment and a name of the subscription
+variables:
+   Subscription: "Azure subscription 1 (8998150e-c3f4-42da-9433-76eb32c20dea)"
+
+
+# The build agent is based on Windows OS. 
+# Linux agents have some differences in available commands and folder paths expressions, etc
+pool:
+   vmImage: "windows-latest"
+
+
+
+steps:
+
+# Step 1: Checkout code into a local folder src
+- checkout: self
+  path: src
+
+
+# Step 2a: Find arm json files for a deployment of blank adf in a src and copy them into the artifact staging folder
+- task: CopyFiles@2  
+  inputs:
+    SourceFolder: '$(Pipeline.Workspace)\src\resources\arm\blank-adf'
+    Contents: '**/*.json'
+    TargetFolder: '$(build.artifactstagingdirectory)\arm'
+    CleanTargetFolder: true
+    OverWrite: true
+  displayName: 'Extra ARM - Blank ADF Service'
+  enabled: true
+
+# Step 2b: Find other adf files, which will deploy pipelines, datasets and so on  in a folder adf_publish and copy them into the artifact folder
+- task: CopyFiles@2  
+  inputs:
+    SourceFolder: '$(Pipeline.Workspace)\src'
+    Contents: '**/*ForFactory.json'
+    TargetFolder: '$(build.artifactstagingdirectory)\adf_publish'
+    CleanTargetFolder: true
+    OverWrite: true
+    flattenFolders: true
+  displayName: 'Extract ARM - ADF Pipelines'
+  enabled: true
+
+
+
+# Step 3: Debugging - print the output of the command tree of artifacts folder
+- powershell: |
+    tree "$(build.artifactstagingdirectory)" /F
+  displayName: "Debug: Show a directory tree"
+
+
+
+# Step 4: Deploy a blank Azure Data Factory instance using ARM templates
+- task: AzureResourceManagerTemplateDeployment@3
+  inputs:
+    deploymentScope: 'Resource Group'
+    azureResourceManagerConnection: '$(Subscription)'
+    action: 'Create Or Update Resource Group'
+    resourceGroupName: 'rd2020rgprep'
+    location: 'West US 2'
+    templateLocation: 'Linked artifact'
+    csmFile: '$(build.artifactstagingdirectory)\arm\template.json'
+    csmParametersFile: '$(build.artifactstagingdirectory)\arm\parameters.json'
+    overrideParameters: '-name "rd2020adfprep"'
+    deploymentMode: 'Incremental'
+  displayName: Deploy ADF Service
+  enabled: true
+
+
+# Step 5: Deploy Azure Data Factory Objects like pipelines, dataflows using ARM templates that ADF generate during each publish event
+- task: AzureResourceManagerTemplateDeployment@3
+  inputs:
+    deploymentScope: 'Resource Group'
+    azureResourceManagerConnection: '$(Subscription)'
+    action: 'Create Or Update Resource Group'
+    resourceGroupName: 'rd2020rgprep'
+    location: 'West US 2'
+    templateLocation: 'Linked artifact'
+    csmFile: '$(build.artifactstagingdirectory)\adf_publish\ARMTemplateForFactory.json'
+    csmParametersFile: '$(build.artifactstagingdirectory)\adf_publish\ARMTemplateParametersForFactory.json'
+    overrideParameters: '-factoryName "rd2020adfprep" -AzureKeyVault1_properties_typeProperties_baseUrl "https://rd2020kvprep.vault.azure.net/"'
+    deploymentMode: 'Incremental'
+  displayName: Deploy ADF Pipelines
+  enabled: true

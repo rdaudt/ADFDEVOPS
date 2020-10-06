@@ -1,0 +1,394 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "env": {
+          "type": "string",
+          "defaultValue": "dev",
+          "metadata": {
+            "description": "Specifies the environment"
+          }
+        },     
+        "prefix": {
+          "type": "string",
+          "defaultValue": "rd2020",
+          "metadata": {
+            "description": "Specifies the environment"
+          }
+        },      
+        "sourcecontainerName": {
+          "type": "string",
+          "defaultValue": "source",
+          "metadata": {
+            "description": "Specifies the name of the source blob container."
+          }
+        },
+        "targetcontainerName": {
+          "type": "string",
+          "defaultValue": "target",
+          "metadata": {
+            "description": "Specifies the name of the target blob container."
+          }
+        },
+        "location": {
+            "type": "string",
+            "defaultValue": "[resourceGroup().location]",
+            "metadata": {
+                "description": "Location for your data factory"
+            }
+        },
+        "keyVaultSecretName": {
+            "type": "string",
+            "defaultValue": "connstr",    
+            "metadata": {
+            "description": "Specifies the name of the key vault."
+            }
+        },    
+        "tenantId": {
+            "type": "string",
+            "defaultValue": "[subscription().tenantId]",
+            "metadata": {
+            "description": "Specifies the Azure Active Directory tenant ID that should be used for authenticating requests to the key vault. Get it by using Get-AzSubscription cmdlet."
+            }
+        },
+        "skuName": {
+            "type": "string",
+            "defaultValue": "Standard",
+            "allowedValues": [
+              "Standard",
+              "Premium"
+            ],
+            "metadata": {
+              "description": "Specifies whether the key vault is a standard vault or a premium vault."
+            }
+        }                        
+    },
+    "variables": {
+      "v_adfname": "[concat(parameters( 'prefix'),'adf',parameters('env'))]",
+      "v_kvname": "[concat(parameters( 'prefix'),'kv',parameters('env'))]",
+      "v_staccountname": "[concat(parameters( 'prefix'),'sa',parameters('env'))]",
+      "factoryId": "[concat('Microsoft.DataFactory/factories/', variables('v_adfname'))]",
+      "AzureKeyVault1_properties_typeProperties_baseUrl": "[concat('https://',variables('v_kvname'),'.vault.azure.net/')]",
+      "AzureBlobStorage1_properties_typeProperties_connectionString_secretName": "[parameters('keyVaultSecretName')]"
+    }, 
+    "resources": [
+      {
+        "type": "Microsoft.Storage/storageAccounts",
+        "apiVersion": "2019-06-01",
+        "name": "[variables('v_staccountname')]",
+        "location": "[parameters('location')]",
+        "sku": {
+          "name": "Standard_LRS",
+          "tier": "Standard"
+        },
+        "kind": "StorageV2",
+        "properties": {
+          "accessTier": "Hot"
+        },
+        "resources": [
+          {
+            "type": "blobServices/containers",
+            "apiVersion": "2019-06-01",
+            "name": "[concat('default/', parameters('sourcecontainerName'))]",
+            "dependsOn": [
+              "[variables('v_staccountname')]"
+            ]
+          },
+          {
+            "type": "blobServices/containers",
+            "apiVersion": "2019-06-01",
+            "name": "[concat('default/', parameters('targetcontainerName'))]",
+            "dependsOn": [
+              "[variables('v_staccountname')]"
+            ]
+          }          
+        ]
+      },
+      {
+          "type": "Microsoft.DataFactory/factories",
+          "apiVersion": "2018-06-01",
+          "name": "[variables('v_adfname')]",
+          "location": "[parameters('location')]",
+          "identity": {
+              "type": "SystemAssigned"
+          },
+          "properties": {}
+      },
+      {
+          "type": "Microsoft.KeyVault/vaults",
+          "name": "[variables('v_kvname')]",
+          "apiVersion": "2019-09-01",
+          "location": "[parameters('location')]",
+          "dependsOn": [
+              "[variables('v_adfname')]"  
+          ],
+          "properties": {
+            "tenantId": "[parameters('tenantId')]",
+            "enableSoftDelete": "false",
+            "accessPolicies": [
+              {
+                //"objectId": "[parameters('objectId')]",
+                "objectId": "[reference(concat('Microsoft.DataFactory/factories/', variables('v_adfname')), '2018-06-01', 'Full').identity.principalId]",
+                "tenantId": "[parameters('tenantId')]",
+                "permissions": {
+                    "keys": ["all"],
+                    "secrets": ["all"],
+                    "certificates": ["all"],
+                    "storage": ["all"]
+                }
+              }
+            ],
+            "sku": {
+              "name": "[parameters('skuName')]",
+              "family": "A"
+            },
+            "networkAcls": {
+                "defaultAction": "Allow",
+                "bypass": "AzureServices"
+            }
+          }
+        },
+        {
+            "type": "Microsoft.KeyVault/vaults/secrets",
+            "name": "[concat(variables('v_kvname'),'/',parameters('keyVaultSecretName'))]",
+            "apiVersion": "2015-06-01",
+            "properties": {
+                "contentType": "text/plain",
+                "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('v_staccountname'),';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('v_staccountname')), providers('Microsoft.Storage', 'storageAccounts').apiVersions[0]).keys[0].value, ';')]"
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', variables('v_kvname'))]",
+                "[resourceId('Microsoft.Storage/storageAccounts', variables('v_staccountname'))]"
+            ]
+        },
+        {
+            "condition": "[equals(parameters('env'),'dev')]",
+            "name": "[concat(variables('v_adfname'), '/CopyPipeline_btu')]",
+            "type": "Microsoft.DataFactory/factories/pipelines",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "description": "Copy file from one container to another",
+                "activities": [
+                    {
+                        "name": "Copy_btu",
+                        "type": "Copy",
+                        "dependsOn": [],
+                        "policy": {
+                            "timeout": "7.00:00:00",
+                            "retry": 0,
+                            "retryIntervalInSeconds": 30,
+                            "secureOutput": false,
+                            "secureInput": false
+                        },
+                        "userProperties": [
+                            {
+                                "name": "Source",
+                                "value": "source//moviesDB.csv"
+                            },
+                            {
+                                "name": "Destination",
+                                "value": "target//"
+                            }
+                        ],
+                        "typeProperties": {
+                            "source": {
+                                "type": "DelimitedTextSource",
+                                "storeSettings": {
+                                    "type": "AzureBlobStorageReadSettings",
+                                    "recursive": false
+                                },
+                                "formatSettings": {
+                                    "type": "DelimitedTextReadSettings",
+                                    "skipLineCount": 0
+                                }
+                            },
+                            "sink": {
+                                "type": "DelimitedTextSink",
+                                "storeSettings": {
+                                    "type": "AzureBlobStorageWriteSettings"
+                                },
+                                "formatSettings": {
+                                    "type": "DelimitedTextWriteSettings",
+                                    "quoteAllText": true,
+                                    "fileExtension": ".csv"
+                                }
+                            },
+                            "enableStaging": false,
+                            "validateDataConsistency": false
+                        },
+                        "inputs": [
+                            {
+                                "referenceName": "SourceDataset_btu",
+                                "type": "DatasetReference",
+                                "parameters": {}
+                            }
+                        ],
+                        "outputs": [
+                            {
+                                "referenceName": "DestinationDataset_btu",
+                                "type": "DatasetReference",
+                                "parameters": {}
+                            }
+                        ]
+                    }
+                ],
+                "annotations": [],
+                "lastPublishTime": "2020-09-24T17:27:16Z"
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/datasets/SourceDataset_btu')]",
+                "[concat(variables('factoryId'), '/datasets/DestinationDataset_btu')]"
+            ]
+        },
+        {
+            "condition": "[equals(parameters('env'),'dev')]",
+            "name": "[concat(variables('v_adfname'), '/SourceDataset_btu')]",
+            "type": "Microsoft.DataFactory/factories/datasets",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "linkedServiceName": {
+                    "referenceName": "AzureBlobStorage1",
+                    "type": "LinkedServiceReference"
+                },
+                "annotations": [],
+                "type": "DelimitedText",
+                "typeProperties": {
+                    "location": {
+                        "type": "AzureBlobStorageLocation",
+                        "fileName": "moviesDB.csv",
+                        "container": "source"
+                    },
+                    "columnDelimiter": ",",
+                    "escapeChar": "\\",
+                    "firstRowAsHeader": true,
+                    "quoteChar": "\""
+                },
+                "schema": [
+                    {
+                        "name": "movie",
+                        "type": "String"
+                    },
+                    {
+                        "name": "title",
+                        "type": "String"
+                    },
+                    {
+                        "name": "genres",
+                        "type": "String"
+                    },
+                    {
+                        "name": "year",
+                        "type": "String"
+                    },
+                    {
+                        "name": "Rating",
+                        "type": "String"
+                    },
+                    {
+                        "name": "Rotton Tomato",
+                        "type": "String"
+                    }
+                ]
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/linkedServices/AzureBlobStorage1')]"
+            ]
+        },
+        {
+            "condition": "[equals(parameters('env'),'dev')]",
+            "name": "[concat(variables('v_adfname'), '/DestinationDataset_btu')]",
+            "type": "Microsoft.DataFactory/factories/datasets",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "linkedServiceName": {
+                    "referenceName": "AzureBlobStorage1",
+                    "type": "LinkedServiceReference"
+                },
+                "annotations": [],
+                "type": "DelimitedText",
+                "typeProperties": {
+                    "location": {
+                        "type": "AzureBlobStorageLocation",
+                        "container": "target"
+                    },
+                    "columnDelimiter": ",",
+                    "escapeChar": "\\",
+                    "quoteChar": "\""
+                },
+                "schema": []
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/linkedServices/AzureBlobStorage1')]"
+            ]
+        },
+        {
+            "condition": "[equals(parameters('env'),'dev')]",
+            "name": "[concat(variables('v_adfname'), '/AzureKeyVault1')]",
+            "type": "Microsoft.DataFactory/factories/linkedServices",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "annotations": [],
+                "type": "AzureKeyVault",
+                "typeProperties": {
+                    "baseUrl": "[variables('AzureKeyVault1_properties_typeProperties_baseUrl')]"
+                }
+            },
+          "dependsOn": [
+              "[variables('v_adfname')]"  
+          ]
+        },
+        {
+            "condition": "[equals(parameters('env'),'dev')]",
+            "name": "[concat(variables('v_adfname'), '/AzureBlobStorage1')]",
+            "type": "Microsoft.DataFactory/factories/linkedServices",
+            "apiVersion": "2018-06-01",
+            "properties": {
+                "annotations": [],
+                "type": "AzureBlobStorage",
+                "typeProperties": {
+                    "connectionString": {
+                        "type": "AzureKeyVaultSecret",
+                        "store": {
+                            "referenceName": "AzureKeyVault1",
+                            "type": "LinkedServiceReference"
+                        },
+                        "secretName": "[variables('AzureBlobStorage1_properties_typeProperties_connectionString_secretName')]"
+                    }
+                }
+            },
+            "dependsOn": [
+                "[concat(variables('factoryId'), '/linkedServices/AzureKeyVault1')]"
+            ]
+        }
+      ],
+    "outputs": {
+      "dataFactoryPrincipalId": {
+        "type": "string",
+        "value": "[reference(concat('Microsoft.DataFactory/factories/', variables('v_adfname')), '2018-06-01', 'Full').identity.principalId]"
+      },
+      "data factory": {
+        "type": "string",
+        "value": "[variables('v_adfname')]"
+      },
+      "storage account": {
+        "type": "string",
+        "value": "[variables('v_staccountname')]"
+      },
+      "key vault": {
+        "type": "string",
+        "value": "[variables('v_kvname')]"
+      },
+      "factoryId": {
+        "type": "string",
+        "value": "[variables('factoryId')]"
+      },
+      "AzureKeyVault1_properties_typeProperties_baseUrl": {
+        "type": "string",
+        "value": "[variables('AzureKeyVault1_properties_typeProperties_baseUrl')]"
+      }, 
+      "AzureBlobStorage1_properties_typeProperties_connectionString_secretName": {
+        "type": "string",
+        "value": "[variables('AzureBlobStorage1_properties_typeProperties_connectionString_secretName')]"
+      }
+  }
+}
