@@ -15,7 +15,7 @@ trigger:
       - "*"
 
 variables:
-   Subscription: "Azure subscription 1 (8998150e-c3f4-42da-9433-76eb32c20dea)"
+   Subscription: "Azure subscription 1 (...)"
    Prefix: "rd2020"
    Environment: "stg"
    ResourceGroupName: '$(Prefix)rg$(Environment)'
